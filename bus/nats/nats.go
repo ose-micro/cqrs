@@ -6,7 +6,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/ose-micro/core/logger"
-	"github.com/ose-micro/cqrs"
 	"github.com/ose-micro/cqrs/bus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -50,7 +49,7 @@ func (n *natsBus[C]) Publish(ctx context.Context, topic string, cmd C) error {
 	return n.nc.Publish(topic, data)
 }
 
-func NewNatsBus[C cqrs.Command](nc *nats.Conn, log logger.Logger) bus.Bus[C] {
+func NewNatsBus[C any](nc *nats.Conn, log logger.Logger) bus.Bus[C] {
 	return &natsBus[C]{
 		nc: nc,
 	}
