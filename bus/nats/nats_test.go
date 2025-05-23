@@ -2,44 +2,57 @@ package nats
 
 import (
 	"context"
-	"log"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ose-micro/core/logger"
+	"github.com/ose-micro/cqrs"
 	"github.com/stretchr/testify/assert"
 )
 
-
 type SendEmailCommand struct {
-    To   string
-    Body string
+	To   string `mapstructure:"to"`
+	Body string `mapstructure:"body"`
 }
 
-const SUBJECT string = "fundme.account.created";
+// CommandName implements cqrs.Command.
+func (s SendEmailCommand) CommandName() string {
+	return "SendEmailCommand"
+}
+
+// Validate implements cqrs.Command.
+func (s SendEmailCommand) Validate() error {
+	return nil
+}
+
+var _ cqrs.Command = SendEmailCommand{}
+
+const SUBJECT string = "fundme.account.created"
 
 func TestNatsCreateBuss(t *testing.T) {
 	nt, err := New(Config{
 		Address: "nats://localhost:4222",
 	})
 	assert.Nil(t, err)
+	log, err := logger.NewZap(logger.Config{
+		Environment: "",
+		Level:       "info",
+	})
 
-	cmd := NewNatsBus[SendEmailCommand](nt)
+	assert.Nil(t, err)
+
+	cmd := NewNatsBus[SendEmailCommand](nt, log)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 
 	cmd.Subscribe(SUBJECT, func(ctx context.Context, cmd SendEmailCommand) error {
-		log.Printf("Sending mail to: %s\n", cmd.To)
+		log.Info(cmd.Body)
 		wg.Done()
 		return nil
 	})
-	cmd.Subscribe(SUBJECT, func(ctx context.Context, cmd SendEmailCommand) error {
-		log.Printf("Sending read to: %s\n", cmd.To)
-		wg.Done()
-		return nil
-	})
-
+	
 	// Give a tiny moment for the subscriber to be set up
 	time.Sleep(300 * time.Millisecond)
 
