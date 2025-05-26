@@ -5,6 +5,10 @@ type Command interface {
 	Validate() error
 }
 
+type Event interface {
+	EventName() string
+}
+
 type Query interface {
 	QueryName() string
 }

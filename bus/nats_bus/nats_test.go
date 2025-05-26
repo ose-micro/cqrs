@@ -1,4 +1,4 @@
-package nats_test
+package nats_bus_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 
 	"github.com/ose-micro/core/logger"
 	"github.com/ose-micro/cqrs"
-	"github.com/ose-micro/cqrs/bus/nats"
+	"github.com/ose-micro/cqrs/bus/nats_bus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -32,7 +32,7 @@ var _ cqrs.Command = SendEmailCommand{}
 const SUBJECT string = "fundme.account.created"
 
 func TestNatsCreateBuss(t *testing.T) {
-	nt, err := nats.New(nats.Config{
+	nt, err := nats_bus.New(nats_bus.Config{
 		Address: "nats://localhost:4222",
 	})
 	assert.Nil(t, err)
@@ -43,7 +43,7 @@ func TestNatsCreateBuss(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	cmd := nats.NewNatsBus[SendEmailCommand](nt, log)
+	cmd := nats_bus.NewNatsBus[SendEmailCommand](nt, log)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
