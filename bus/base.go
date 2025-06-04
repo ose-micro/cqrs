@@ -6,7 +6,18 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-type Bus[C any] interface {
-	Publish(ctx context.Context, subject string, cmd C) error
-	Subscribe(subject string, handler func(ctx context.Context, cmd C) error) (*nats.Subscription, error)
+
+type Config struct {
+	Address string `mapstructure:"address"`
+}
+
+type Bus interface {
+	Publish(subject string, data any) error
+	Subscribe(subject string, handler func(ctx context.Context, data any) error) (*nats.Subscription, error)
+}
+
+
+
+func New(conf Config) (*nats.Conn, error) {
+	return nats.Connect(conf.Address)
 }

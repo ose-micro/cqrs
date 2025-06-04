@@ -6,8 +6,8 @@ type CommandHandle[C Command, R any] interface {
 	Handle(ctx context.Context, command C) (R, error)
 }
 
-type EventHandle[E Event, R any] interface {
-	Handle(ctx context.Context, event E) (R, error)
+type EventHandle[E Event] interface {
+	Handle(ctx context.Context, event E) error
 }
 
 type QueryHandle[Q Query, R any] interface {
