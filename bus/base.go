@@ -13,8 +13,8 @@ type Config struct {
 
 type Bus interface {
 	Publish(subject string, data any) error
-	Subscribe(subject string, handler func(ctx context.Context, data any) error) (*nats.Subscription, error)
-	SubscribeWithQueue(subject, queue string, handler func(ctx context.Context, data any) error) (*nats.Subscription, error)
+	Subscribe(subject, stream, durable, queue string, handler func(ctx context.Context, data any) error) error
+	EnsureStream(stream string, subjects []string) error
 }
 
 
