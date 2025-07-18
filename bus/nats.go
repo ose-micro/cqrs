@@ -3,7 +3,6 @@ package bus
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/nats-io/nats.go"
 	"github.com/ose-micro/core/logger"
@@ -18,54 +17,99 @@ type natsBus struct {
 	log logger.Logger
 }
 
-// Publish implements bus.Bus.
+// Publish sends a message to the given subject.
 func (n *natsBus) Publish(subject string, data any) error {
-	ctx, span := otel.Tracer("ose-cqrs").Start(context.Background(), "ose-cqrs.nats.publish", trace.WithAttributes(
-		attribute.String("operation", "PUBlISH"),
-		attribute.String("payload", fmt.Sprintf("%v", data)),
-	))
+	ctx, span := otel.Tracer("ose-cqrs").Start(context.Background(), "ose-cqrs.nats.publish",
+		trace.WithAttributes(
+			attribute.String("operation", "PUBLISH"),
+			attribute.String("subject", subject),
+		),
+	)
 	defer span.End()
 
-	traceId := trace.SpanContextFromContext(ctx).TraceID().String()
-	span.SetAttributes(attribute.String("subject", subject))
+	traceID := trace.SpanContextFromContext(ctx).TraceID().String()
 
 	payload, err := json.Marshal(data)
 	if err != nil {
 		span.RecordError(err)
+		n.log.Error("failed to marshal event",
+			zap.String("trace_id", traceID),
+			zap.String("subject", subject),
+			zap.Error(err),
+		)
 		return err
 	}
 
-	err = n.nc.Publish(subject, payload)
-	if err != nil {
+	if err := n.nc.Publish(subject, payload); err != nil {
 		span.RecordError(err)
 		n.log.Error("failed to publish event",
-			zap.String("trace_id", traceId),
-			zap.String("operation", "PUBlISH"),
+			zap.String("trace_id", traceID),
+			zap.String("subject", subject),
 			zap.Error(err),
 		)
+		return err
 	}
-	return err
+
+	return nil
 }
 
-// Subscribe implements bus.Bus.
-func (n *natsBus) Subscribe(subject string, handler func(ctx context.Context, data any) error) (*nats.Subscription, error) {
-	return n.nc.Subscribe(subject, func(msg *nats.Msg) {
-		ctx, span := otel.Tracer("ose-cqrs").Start(context.Background(), "Bus.Subscribe")
+// SubscribeWithQueue ensures only one consumer in a group receives a message.
+func (n *natsBus) SubscribeWithQueue(subject, queue string, handler func(ctx context.Context, data any) error) (*nats.Subscription, error) {
+	return n.nc.QueueSubscribe(subject, queue, func(msg *nats.Msg) {
+		ctx, span := otel.Tracer("ose-cqrs").Start(context.Background(), "ose-cqrs.nats.queue_subscribe")
 		defer span.End()
-		span.SetAttributes(attribute.String("subject", subject))
+
+		span.SetAttributes(attribute.String("subject", subject), attribute.String("queue_group", queue))
 
 		var payload map[string]any
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
 			span.RecordError(err)
+			n.log.Error("failed to unmarshal NATS message",
+				zap.String("subject", subject),
+				zap.Error(err),
+			)
 			return
 		}
 
 		if err := handler(ctx, payload); err != nil {
 			span.RecordError(err)
+			n.log.Error("handler error in queue subscription",
+				zap.String("subject", subject),
+				zap.Error(err),
+			)
 		}
 	})
 }
 
+// SubscribeSimple broadcasts to all subscribers (no queue group).
+func (n *natsBus) Subscribe(subject string, handler func(ctx context.Context, data any) error) (*nats.Subscription, error) {
+	return n.nc.Subscribe(subject, func(msg *nats.Msg) {
+		ctx, span := otel.Tracer("ose-cqrs").Start(context.Background(), "ose-cqrs.nats.broadcast_subscribe")
+		defer span.End()
+
+		span.SetAttributes(attribute.String("subject", subject))
+
+		var payload map[string]any
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			span.RecordError(err)
+			n.log.Error("failed to unmarshal NATS message",
+				zap.String("subject", subject),
+				zap.Error(err),
+			)
+			return
+		}
+
+		if err := handler(ctx, payload); err != nil {
+			span.RecordError(err)
+			n.log.Error("handler error in broadcast subscription",
+				zap.String("subject", subject),
+				zap.Error(err),
+			)
+		}
+	})
+}
+
+// NewNats creates a new NATS bus implementation.
 func NewNats(nc *nats.Conn, log logger.Logger) Bus {
 	return &natsBus{
 		nc:  nc,
