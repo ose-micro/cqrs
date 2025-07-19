@@ -58,75 +58,63 @@ func (r *rabbitMQ) Publish(subject string, data any) error {
 
 // Subscribe implements bus.Bus.
 func (r *rabbitMQ) Subscribe(subject, stream, durable, queue string, handler func(ctx context.Context, data any) error) error {
-	qName := queue
-	if qName == "" {
-		qName = durable
-	}
-	r.log.Info("Setting up consumer",
-		"subject", subject,
-		"queue", qName,
-		"exchange", r.config.Exchange,
-	)
-
-	_, err := r.channel.QueueDeclare(
-		qName,
+	// Declare the queue
+	q, err := r.channel.QueueDeclare(
+		queue, // name
 		true,  // durable
-		false, // auto-delete
+		false, // delete when unused
 		false, // exclusive
 		false, // no-wait
-		nil,
+		nil,   // arguments
 	)
 	if err != nil {
-		r.log.Error("Failed to declare queue", "queue", qName, "error", err)
+		r.log.Error("Failed to declare queue", "error", err)
 		return err
 	}
 
 	err = r.channel.QueueBind(
-		qName,
-		subject,
-		r.config.Exchange,
+		q.Name,         // queue name
+		subject,        // routing key
+		r.config.Exchange, // exchange
 		false,
 		nil,
 	)
 	if err != nil {
-		r.log.Error("Failed to bind queue", "queue", qName, "subject", subject, "error", err)
+		r.log.Error("Failed to bind queue", "error", err)
 		return err
 	}
 
-	deliveries, err := r.channel.Consume(
-		qName,
-		"",    // consumer tag
-		false, // autoAck
-		false, // exclusive
-		false, // no-local
-		false, // no-wait
+	msgs, err := r.channel.Consume(
+		q.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
 		nil,
 	)
 	if err != nil {
-		r.log.Error("Failed to consume queue", "queue", qName, "error", err)
+		r.log.Error("Failed to consume messages", "error", err)
 		return err
 	}
 
 	go func() {
-		for msg := range deliveries {
-			ctx, span := r.tracer.Start(context.Background(), "rabbitmq.Consume")
-			r.log.Debug("Received message", "subject", subject, "queue", qName)
+		for d := range msgs {
+			ctx := context.Background()
+			// Start trace span here if you use tracing
 
-			err := handler(ctx, msg.Body)
-			if err != nil {
-				r.log.Error("Handler failed", "error", err)
-				_ = msg.Nack(false, true)
-				span.End()
+			var payload map[string]interface{}
+			if err := json.Unmarshal(d.Body, &payload); err != nil {
+				r.log.Error("Handler failed", "error", "invalid message format", "raw", string(d.Body))
 				continue
 			}
 
-			_ = msg.Ack(false)
-			span.End()
+			if err := handler(ctx, payload); err != nil {
+				r.log.Error("Handler error", "error", err)
+			}
 		}
-		r.log.Warn("Delivery channel closed", "queue", qName)
 	}()
 
-	r.log.Info("Consumer registered", "subject", subject, "queue", qName)
 	return nil
 }
 
