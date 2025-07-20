@@ -38,7 +38,7 @@ func main() {
 	}
 
 	// Subscribe to event
-	err = rmqBus.Subscribe("event.user.created", "", "user-service", "", func(ctx context.Context, data any) error {
+	err = rmqBus.Subscribe("event.user.created", "user-service", func(ctx context.Context, data any) error {
 		log.Info("📥 Received user.created event", "data", string(data.([]byte)))
 		return nil
 	})

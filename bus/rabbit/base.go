@@ -57,7 +57,7 @@ func (r *rabbitMQ) Publish(subject string, data any) error {
 }
 
 // Subscribe implements bus.Bus.
-func (r *rabbitMQ) Subscribe(subject, stream, durable, queue string, handler func(ctx context.Context, data any) error) error {
+func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error) error {
 	// Declare the queue
 	q, err := r.channel.QueueDeclare(
 		queue, // name
