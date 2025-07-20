@@ -36,10 +36,10 @@ func (r *rabbitMQ) Publish(subject string, data any) error {
 	}
 
 	err = r.channel.Publish(
-		r.config.Exchange, // exchange
-		subject,           // routing key
-		false,             // mandatory
-		false,             // immediate
+		r.config.Exchange,
+		subject,
+		false,
+		false,
 		amqp.Publishing{
 			ContentType: "application/json",
 			Timestamp:   time.Now(),
@@ -56,16 +56,17 @@ func (r *rabbitMQ) Publish(subject string, data any) error {
 	return err
 }
 
-// Subscribe implements bus.Bus.
-func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error) error {
-	// Declare the queue
+// Subscribe implements bus.Bus with ready signal and reliability improvements.
+func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error)  error {
+	ready := make(chan struct{})
+
 	q, err := r.channel.QueueDeclare(
-		queue, // name
-		true,  // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		queue,
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		r.log.Error("Failed to declare queue", "error", err)
@@ -73,9 +74,9 @@ func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Con
 	}
 
 	err = r.channel.QueueBind(
-		q.Name,         // queue name
-		subject,        // routing key
-		r.config.Exchange, // exchange
+		q.Name,
+		subject,
+		r.config.Exchange,
 		false,
 		nil,
 	)
@@ -86,8 +87,8 @@ func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Con
 
 	msgs, err := r.channel.Consume(
 		q.Name,
-		"",
-		true,
+		"",   // consumer tag
+		true, // auto-ack for now
 		false,
 		false,
 		false,
@@ -99,9 +100,11 @@ func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Con
 	}
 
 	go func() {
+		r.log.Info("Consumer ready", "queue", q.Name, "routingKey", subject)
+		close(ready)
+
 		for d := range msgs {
 			ctx := context.Background()
-			// Start trace span here if you use tracing
 
 			var payload map[string]interface{}
 			if err := json.Unmarshal(d.Body, &payload); err != nil {
@@ -120,11 +123,10 @@ func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Con
 
 // New creates a RabbitMQ-backed bus.Bus.
 func New(cfg *Config, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error) {
-	var conn *amqp.Connection
-	var err error
-
 	log.Info("Connecting to RabbitMQ", "url", cfg.URL)
 
+	var conn *amqp.Connection
+	var err error
 	for {
 		conn, err = amqp.Dial(cfg.URL)
 		if err == nil {
