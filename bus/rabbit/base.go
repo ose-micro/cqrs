@@ -56,8 +56,8 @@ func (r *rabbitMQ) Publish(subject string, data any) error {
 	return err
 }
 
-// Subscribe implements bus.Bus with ready signal and reliability improvements.
-func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error)  error {
+// Subscribe implements bus.Bus with ready signal and manual ack.
+func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error) error {
 	ready := make(chan struct{})
 
 	q, err := r.channel.QueueDeclare(
@@ -88,7 +88,7 @@ func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Con
 	msgs, err := r.channel.Consume(
 		q.Name,
 		"",   // consumer tag
-		true, // auto-ack for now
+		false, // auto-ack = false (manual ack mode)
 		false,
 		false,
 		false,
@@ -109,12 +109,17 @@ func (r *rabbitMQ) Subscribe(subject, queue string, handler func(ctx context.Con
 			var payload map[string]interface{}
 			if err := json.Unmarshal(d.Body, &payload); err != nil {
 				r.log.Error("Handler failed", "error", "invalid message format", "raw", string(d.Body))
+				d.Nack(false, false) // reject without requeue
 				continue
 			}
 
 			if err := handler(ctx, payload); err != nil {
 				r.log.Error("Handler error", "error", err)
+				d.Nack(false, true) // requeue message on error
+				continue
 			}
+
+			d.Ack(false)
 		}
 	}()
 
