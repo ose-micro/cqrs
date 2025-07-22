@@ -33,7 +33,8 @@ func New(conf Config, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error)
 }
 
 func (n *natsBus) Publish(subject string, data any) error {
-	_, span := n.tracer.Start(context.Background(), "nats.Publish")
+	ctx := context.Background()
+	_, span := n.tracer.Start(ctx, "nats.Publish")
 	defer span.End()
 
 	body, err := json.Marshal(data)
@@ -45,38 +46,72 @@ func (n *natsBus) Publish(subject string, data any) error {
 	err = n.nc.Publish(subject, body)
 	if err != nil {
 		n.log.Error("Failed to publish message", "subject", subject, "error", err)
-	} else {
-		n.log.Info("Published message", "subject", subject)
+		return err
 	}
 
-	return err
+	if flushErr := n.nc.Flush(); flushErr != nil {
+		n.log.Error("Failed to flush NATS publish", "error", flushErr)
+		return flushErr
+	}
+
+	if lastErr := n.nc.LastError(); lastErr != nil {
+		n.log.Error("NATS connection error", "error", lastErr)
+		return lastErr
+	}
+
+	n.log.Info("Published message", "subject", subject)
+	return nil
 }
 
 func (n *natsBus) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error) error {
-	ready := make(chan struct{})
+	sub, err := n.nc.QueueSubscribe(subject, queue, func(msg *nats.Msg) {
+		// Run each handler in its own goroutine to avoid blocking NATS
+		go func() {
+			ctx := context.Background()
+			var payload map[string]interface{}
 
-	_, err := n.nc.QueueSubscribe(subject, queue, func(msg *nats.Msg) {
-		ctx := context.Background()
-		var payload map[string]interface{}
-		if err := json.Unmarshal(msg.Data, &payload); err != nil {
-			n.log.Error("Invalid message format", "raw", string(msg.Data))
-			return
-		}
+			if err := json.Unmarshal(msg.Data, &payload); err != nil {
+				n.log.Error("Invalid message format", "raw", string(msg.Data))
+				return
+			}
 
-		if err := handler(ctx, payload); err != nil {
-			n.log.Error("Handler error", "error", err)
-		}
+			if err := handler(ctx, payload); err != nil {
+				n.log.Error("Handler error", "subject", subject, "error", err)
+			}
+		}()
 	})
 	if err != nil {
 		n.log.Error("Failed to subscribe", "subject", subject, "queue", queue, "error", err)
 		return err
 	}
 
+	// Ensure subscription is flushed to server
+	if err := n.nc.Flush(); err != nil {
+		n.log.Error("NATS flush failed", "error", err)
+		return err
+	}
+
+	if lastErr := n.nc.LastError(); lastErr != nil {
+		n.log.Error("NATS connection error after subscribe", "error", lastErr)
+		return lastErr
+	}
+
 	n.log.Info("Subscribed to subject", "subject", subject, "queue", queue)
-	close(ready)
+
+	// Prevent garbage collection of the subscription
+	_ = sub
+
 	return nil
 }
 
 func (n *natsBus) Close() error {
-	return n.nc.Drain()
+	n.log.Info("Draining NATS connection...")
+	if err := n.nc.Drain(); err != nil {
+		n.log.Error("Failed to drain NATS", "error", err)
+		n.nc.Close()
+		return err
+	}
+	n.log.Info("NATS connection drained successfully")
+	n.nc.Close()
+	return nil
 }
