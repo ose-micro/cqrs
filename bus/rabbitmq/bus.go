@@ -12,6 +12,10 @@ import (
 	"github.com/streadway/amqp"
 )
 
+type Config struct {
+	URL string `mapstructure:"url"`
+}
+
 type rabbitBus struct {
 	conn    *amqp.Connection
 	channel *amqp.Channel
@@ -19,8 +23,8 @@ type rabbitBus struct {
 	tracer  tracing.Tracer
 }
 
-func New(url string, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error) {
-	conn, err := amqp.Dial(url)
+func New(conf Config, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error) {
+	conn, err := amqp.Dial(conf.URL)
 	if err != nil {
 		log.Error("failed to dial RabbitMQ", "error", err)
 		return nil, err
