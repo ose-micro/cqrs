@@ -2,7 +2,7 @@ module github.com/ose-micro/cqrs
 
 go 1.24.1
 
-require go.uber.org/zap v1.26.0
+require go.uber.org/zap v1.26.0 // indirect
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
@@ -33,7 +33,6 @@ require (
 require (
 	github.com/nats-io/nats.go v1.43.0
 	github.com/ose-micro/core v0.1.5
-	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/streadway/amqp v1.1.0
 	go.opentelemetry.io/otel v1.36.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
