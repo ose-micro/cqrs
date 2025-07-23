@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ose-micro/core/logger"
 	"github.com/ose-micro/core/tracing"
 	"github.com/ose-micro/cqrs/bus"
 	"github.com/rabbitmq/amqp091-go"
@@ -20,11 +21,11 @@ type Config struct {
 type rabbitBus struct {
 	conn    *amqp091.Connection
 	channel *amqp091.Channel
-	log     *zap.Logger
+	log     logger.Logger
 	tracer  tracing.Tracer
 }
 
-func NewBus(conf Config, log *zap.Logger, tracer tracing.Tracer) (bus.Bus, error) {
+func NewBus(conf Config, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error) {
 	conn, err := amqp091.Dial(conf.Url)
 	if err != nil {
 		log.Error("Failed to dial RabbitMQ", zap.String("url", conf.Url), zap.Error(err))
