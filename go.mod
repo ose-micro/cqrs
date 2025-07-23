@@ -34,6 +34,7 @@ require (
 	github.com/nats-io/nats.go v1.43.0
 	github.com/ose-micro/core v0.1.5
 	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/streadway/amqp v1.1.0
 	go.opentelemetry.io/otel v1.36.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 )

@@ -1,4 +1,4 @@
-package rabbitmq
+package rabbit
 
 import (
 	"context"
@@ -9,36 +9,29 @@ import (
 	"github.com/ose-micro/core/logger"
 	"github.com/ose-micro/core/tracing"
 	"github.com/ose-micro/cqrs/bus"
-	"github.com/rabbitmq/amqp091-go"
-	"go.uber.org/zap"
+	"github.com/streadway/amqp"
 )
 
-type Config struct {
-	Url      string `mapstructure:"url"`
-	Exchange string `mapstructure:"exchange"`
-}
-
 type rabbitBus struct {
-	conn    *amqp091.Connection
-	channel *amqp091.Channel
+	conn    *amqp.Connection
+	channel *amqp.Channel
 	log     logger.Logger
 	tracer  tracing.Tracer
 }
 
-func NewBus(conf Config, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error) {
-	conn, err := amqp091.Dial(conf.Url)
+func New(url string, log logger.Logger, tracer tracing.Tracer) (bus.Bus, error) {
+	conn, err := amqp.Dial(url)
 	if err != nil {
-		log.Error("Failed to dial RabbitMQ", zap.String("url", conf.Url), zap.Error(err))
-		return nil, fmt.Errorf("dial error: %w", err)
+		log.Error("failed to dial RabbitMQ", "error", err)
+		return nil, err
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Error("Failed to create RabbitMQ channel", zap.Error(err))
-		return nil, fmt.Errorf("channel error: %w", err)
+		log.Error("failed to open channel", "error", err)
+		conn.Close()
+		return nil, err
 	}
-
-	log.Info("Connected to RabbitMQ", zap.String("url", conf.Url))
 
 	return &rabbitBus{
 		conn:    conn,
@@ -49,117 +42,101 @@ func NewBus(conf Config, log logger.Logger, tracer tracing.Tracer) (bus.Bus, err
 }
 
 func (r *rabbitBus) Publish(subject string, data any) error {
-	ctx, span := r.tracer.Start(context.Background(), "rabbitmq.publish")
+	ctx := context.Background()
+	_, span := r.tracer.Start(ctx, "rabbitmq.Publish")
 	defer span.End()
 
 	body, err := json.Marshal(data)
 	if err != nil {
-		r.log.Error("Failed to marshal message", zap.String("subject", subject), zap.Error(err))
-		return fmt.Errorf("marshal error: %w", err)
+		span.RecordError(err)
+		return fmt.Errorf("marshal: %w", err)
 	}
 
-	_, err = r.channel.QueueDeclare(
-		subject,
-		true,  // durable
-		false, // auto-delete
-		false, // exclusive
-		false,
-		nil,
-	)
-	if err != nil {
-		r.log.Error("Failed to declare queue", zap.String("subject", subject), zap.Error(err))
-		return fmt.Errorf("queue declare error: %w", err)
+	if err := r.channel.ExchangeDeclare(subject, "fanout", true, false, false, false, nil); err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("declare exchange: %w", err)
 	}
 
-	err = r.channel.PublishWithContext(ctx,
-		"",
-		subject,
-		false,
-		false,
-		amqp091.Publishing{
-			ContentType:  "application/json",
-			Body:         body,
-			Timestamp:    time.Now(),
-			DeliveryMode: amqp091.Persistent,
+	err = r.channel.Publish(
+		subject, "", false, false,
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        body,
+			Timestamp:   time.Now(),
 		},
 	)
 	if err != nil {
-		r.log.Error("Failed to publish message", zap.String("subject", subject), zap.Error(err))
-		return fmt.Errorf("publish error: %w", err)
+		span.RecordError(err)
+		return fmt.Errorf("publish: %w", err)
 	}
 
-	r.log.Info("Published message", zap.String("subject", subject))
+	r.log.Debug("Published message", "subject", subject)
 	return nil
 }
 
 func (r *rabbitBus) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error) error {
-	_, err := r.channel.QueueDeclare(
-		subject,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		r.log.Error("Failed to declare queue", zap.String("subject", subject), zap.Error(err))
-		return fmt.Errorf("queue declare error: %w", err)
+	if queue == "" {
+		queue = fmt.Sprintf("%s.queue", subject)
+	}
+	consumerTag := fmt.Sprintf("%s-%d", queue, time.Now().UnixNano())
+
+	if err := r.channel.ExchangeDeclare(subject, "fanout", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare exchange: %w", err)
 	}
 
-	msgs, err := r.channel.Consume(
-		subject,
-		queue,
-		false, // manual ack
-		false,
-		false,
-		false,
-		nil,
-	)
+	q, err := r.channel.QueueDeclare(queue, true, false, false, false, nil)
 	if err != nil {
-		r.log.Error("Failed to start consumer", zap.String("subject", subject), zap.String("queue", queue), zap.Error(err))
-		return fmt.Errorf("consume error: %w", err)
+		return fmt.Errorf("declare queue: %w", err)
+	}
+
+	if err := r.channel.QueueBind(q.Name, "", subject, false, nil); err != nil {
+		return fmt.Errorf("bind queue: %w", err)
+	}
+
+	msgs, err := r.channel.Consume(q.Name, consumerTag, false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume: %w", err)
 	}
 
 	go func() {
-		r.log.Info("Started RabbitMQ consumer", zap.String("subject", subject), zap.String("queue", queue))
-
 		for d := range msgs {
-			ctx, span := r.tracer.Start(context.Background(), "rabbitmq.handle")
+			ctx := context.Background()
+			ctx, span := r.tracer.Start(ctx, "rabbitmq.Subscribe")
 
-			var payload map[string]any
+			var payload any
 			if err := json.Unmarshal(d.Body, &payload); err != nil {
-				r.log.Error("Failed to unmarshal message", zap.String("subject", subject), zap.Error(err))
-				_ = d.Nack(false, false) // drop
+				r.log.Error("unmarshal error", "err", err)
+				span.RecordError(err)
+				d.Nack(false, false)
 				span.End()
 				continue
 			}
 
 			if err := handler(ctx, payload); err != nil {
-				r.log.Error("Handler error", zap.String("subject", subject), zap.Error(err))
-				_ = d.Nack(false, true) // retry
+				r.log.Error("handler error", "err", err)
+				span.RecordError(err)
+				d.Nack(false, true)
 				span.End()
 				continue
 			}
 
-			_ = d.Ack(false)
-			r.log.Info("Handled and acked message", zap.String("subject", subject))
+			d.Ack(false)
 			span.End()
 		}
+
+		r.log.Warn("consumer closed", "queue", queue)
 	}()
 
+	r.log.Info("subscription started", "subject", subject, "queue", queue, "tag", consumerTag)
 	return nil
 }
 
 func (r *rabbitBus) Close() error {
-	if r.channel != nil {
-		if err := r.channel.Close(); err == nil {
-			r.log.Info("Closed RabbitMQ channel")
-		}
+	if err := r.channel.Close(); err != nil {
+		r.log.Warn("failed to close channel", "error", err)
 	}
-	if r.conn != nil {
-		if err := r.conn.Close(); err == nil {
-			r.log.Info("Closed RabbitMQ connection")
-		}
+	if err := r.conn.Close(); err != nil {
+		r.log.Warn("failed to close connection", "error", err)
 	}
 	return nil
 }
