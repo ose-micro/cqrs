@@ -77,63 +77,82 @@ func (r *rabbitBus) Publish(subject string, data any) error {
 	r.log.Debug("Published message", "subject", subject)
 	return nil
 }
-
 func (r *rabbitBus) Subscribe(subject, queue string, handler func(ctx context.Context, data any) error) error {
-	if queue == "" {
-		queue = fmt.Sprintf("%s.queue", subject)
-	}
-	consumerTag := fmt.Sprintf("%s-%d", queue, time.Now().UnixNano())
+    // Let RabbitMQ generate a unique queue name if empty
+    if queue == "" {
+        queue = "" // empty means auto-generated queue name
+    }
+    consumerTag := fmt.Sprintf("consumer-%d", time.Now().UnixNano())
 
-	if err := r.channel.ExchangeDeclare(subject, "fanout", true, false, false, false, nil); err != nil {
-		return fmt.Errorf("declare exchange: %w", err)
-	}
+    // Declare the fanout exchange (broadcast)
+    if err := r.channel.ExchangeDeclare(subject, "fanout", true, false, false, false, nil); err != nil {
+        return fmt.Errorf("declare exchange: %w", err)
+    }
 
-	q, err := r.channel.QueueDeclare(queue, true, false, false, false, nil)
-	if err != nil {
-		return fmt.Errorf("declare queue: %w", err)
-	}
+    // Declare the queue (empty queue name means server generates a unique name)
+    q, err := r.channel.QueueDeclare(
+        queue,
+        true,  // durable (set to false if you want auto-delete when subscriber disconnects)
+        false, // autoDelete (true if queue should be deleted when no longer used)
+        false, // exclusive (true if only this connection can use the queue)
+        false, // noWait
+        nil,   // args
+    )
+    if err != nil {
+        return fmt.Errorf("declare queue: %w", err)
+    }
 
-	if err := r.channel.QueueBind(q.Name, "", subject, false, nil); err != nil {
-		return fmt.Errorf("bind queue: %w", err)
-	}
+    // Bind queue to exchange (routing key is ignored for fanout)
+    if err := r.channel.QueueBind(q.Name, "", subject, false, nil); err != nil {
+        return fmt.Errorf("bind queue: %w", err)
+    }
 
-	msgs, err := r.channel.Consume(q.Name, consumerTag, false, false, false, false, nil)
-	if err != nil {
-		return fmt.Errorf("consume: %w", err)
-	}
+    msgs, err := r.channel.Consume(
+        q.Name,
+        consumerTag,
+        false, // manual ack
+        false, // exclusive
+        false, // noLocal (not supported by RabbitMQ)
+        false, // noWait
+        nil,   // args
+    )
+    if err != nil {
+        return fmt.Errorf("consume: %w", err)
+    }
 
-	go func() {
-		for d := range msgs {
-			ctx := context.Background()
-			ctx, span := r.tracer.Start(ctx, "rabbitmq.Subscribe")
+    go func() {
+        for d := range msgs {
+            ctx := context.Background()
+            ctx, span := r.tracer.Start(ctx, "rabbitmq.Subscribe")
 
-			var payload any
-			if err := json.Unmarshal(d.Body, &payload); err != nil {
-				r.log.Error("unmarshal error", "err", err)
-				span.RecordError(err)
-				d.Nack(false, false)
-				span.End()
-				continue
-			}
+            var payload any
+            if err := json.Unmarshal(d.Body, &payload); err != nil {
+                r.log.Error("unmarshal error", "err", err)
+                span.RecordError(err)
+                _ = d.Nack(false, false) // discard message
+                span.End()
+                continue
+            }
 
-			if err := handler(ctx, payload); err != nil {
-				r.log.Error("handler error", "err", err)
-				span.RecordError(err)
-				d.Nack(false, true)
-				span.End()
-				continue
-			}
+            if err := handler(ctx, payload); err != nil {
+                r.log.Error("handler error", "err", err)
+                span.RecordError(err)
+                _ = d.Nack(false, true) // requeue for retry
+                span.End()
+                continue
+            }
 
-			d.Ack(false)
-			span.End()
-		}
+            _ = d.Ack(false)
+            span.End()
+        }
 
-		r.log.Warn("consumer closed", "queue", queue)
-	}()
+        r.log.Warn("consumer closed", "queue", q.Name)
+    }()
 
-	r.log.Info("subscription started", "subject", subject, "queue", queue, "tag", consumerTag)
-	return nil
+    r.log.Info("subscription started", "subject", subject, "queue", q.Name, "tag", consumerTag)
+    return nil
 }
+
 
 func (r *rabbitBus) Close() error {
 	if err := r.channel.Close(); err != nil {
